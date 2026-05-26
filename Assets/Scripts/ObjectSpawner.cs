@@ -65,6 +65,7 @@ public class ObjectSpawner : MonoBehaviour
 
         //Add to list
         spawnedObjects.Add(spawned);
+        spawned.tag = "Placeable";
 
         Debug.Log("Spawned: " + spawned.name);
     }
