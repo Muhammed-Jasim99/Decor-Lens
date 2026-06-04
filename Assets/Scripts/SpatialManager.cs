@@ -27,6 +27,11 @@ public class SpatialManager : MonoBehaviour
     {
         public string uuid;
         public string prefabId;
+
+        // ADDED: Individual primitive elements to hold the item's transform scaling signatures safely
+        public float savedScaleX;
+        public float savedScaleY;
+        public float savedScaleZ;
     }
 
     [Serializable]
@@ -56,12 +61,12 @@ public class SpatialManager : MonoBehaviour
 
     public void OnSave(InputAction.CallbackContext context)
     {
-        debugText.text = "Gathering placeable objects...";
+        //debugText.text = "Gathering placeable objects...";
         GameObject[] placeableObjects = GameObject.FindGameObjectsWithTag(TargetTag);
 
         if (placeableObjects.Length == 0)
         {
-            debugText.text = "No objects found to save.";
+            //debugText.text = "No objects found to save.";
             return;
         }
 
@@ -73,7 +78,7 @@ public class SpatialManager : MonoBehaviour
         AnchorSaveCollection collection = new AnchorSaveCollection();
         _activeAnchors.Clear();
 
-        debugText.text = $"Baking {objectsToAnchor.Length} anchors...";
+        //debugText.text = $"Baking {objectsToAnchor.Length} anchors...";
 
         foreach (GameObject go in objectsToAnchor)
         {
@@ -82,6 +87,9 @@ public class SpatialManager : MonoBehaviour
                 Debug.LogWarning($"Skipping {go.name}: Missing AnchorIdentity script component!");
                 continue;
             }
+
+            // Note down the custom transform scale the player manipulated in the scene BEFORE adding the anchor
+            Vector3 currentObjectScale = go.transform.localScale;
 
             if (!go.TryGetComponent<OVRSpatialAnchor>(out var anchor))
             {
@@ -103,9 +111,15 @@ public class SpatialManager : MonoBehaviour
                 AnchorSaveData data = new AnchorSaveData();
                 data.uuid = anchor.Uuid.ToString();
                 data.prefabId = identity.prefabId;
+
+                // ADDED: Store scale properties into serialization block
+                data.savedScaleX = currentObjectScale.x;
+                data.savedScaleY = currentObjectScale.y;
+                data.savedScaleZ = currentObjectScale.z;
+
                 collection.anchors.Add(data);
 
-                Debug.Log($"[SAVED OK] Meta Anchor: {data.uuid} matched to Prefab: {data.prefabId}");
+                Debug.Log($"[SAVED OK] Meta Anchor: {data.uuid} | Prefab: {data.prefabId} | Scale: {currentObjectScale}");
             }
             else
             {
@@ -115,26 +129,25 @@ public class SpatialManager : MonoBehaviour
 
         if (collection.anchors.Count > 0)
         {
-            // Convert the data cleanly to JSON to prevent string split corruption bugs
             string json = JsonUtility.ToJson(collection);
             PlayerPrefs.SetString(AnchorRegistryKey, json);
             PlayerPrefs.Save();
 
-            debugText.text = $"Saved {collection.anchors.Count} items successfully!";
+            debugText.text = "Saved items successfully!";
         }
         else
         {
-            debugText.text = "Failed to save any anchors via Meta.";
+            //debugText.text = "Failed to save any anchors via Meta.";
         }
     }
 
     public void OnLoad(InputAction.CallbackContext context)
     {
-        debugText.text = "Loading registry...";
+        //debugText.text = "Loading registry...";
 
         if (!PlayerPrefs.HasKey(AnchorRegistryKey))
         {
-            debugText.text = "No saved anchor registry found.";
+            //debugText.text = "No saved anchor registry found.";
             return;
         }
 
@@ -143,11 +156,10 @@ public class SpatialManager : MonoBehaviour
 
         if (collection == null || collection.anchors.Count == 0)
         {
-            debugText.text = "Saved data registry is empty.";
+            //debugText.text = "Saved data registry is empty.";
             return;
         }
 
-        // Reconstruct pure Guids for Meta query
         List<Guid> uuidsToLoad = new List<Guid>();
         foreach (var item in collection.anchors)
         {
@@ -163,7 +175,7 @@ public class SpatialManager : MonoBehaviour
     private async void LoadAnchorsByUuid(IEnumerable<Guid> uuids, AnchorSaveCollection savedCollection)
     {
         _unboundAnchors.Clear();
-        debugText.text = "Querying anchors from Meta...";
+        //debugText.text = "Querying anchors from Meta...";
 
         var result = await OVRSpatialAnchor.LoadUnboundAnchorsAsync(uuids, _unboundAnchors);
 
@@ -171,35 +183,37 @@ public class SpatialManager : MonoBehaviour
         {
             int loadCount = 0;
 
-            // Loop completely through the anchors Meta verified exist in space
             foreach (var unboundAnchor in _unboundAnchors)
             {
                 bool localizationSuccess = await unboundAnchor.LocalizeAsync();
 
                 if (localizationSuccess)
                 {
-                    // FIXED LOOKUP: Find the matching layout block by converting to string explicitly
                     string unboundUuidStr = unboundAnchor.Uuid.ToString();
-                    string targetPrefabId = "";
+
+                    // Create a reference placeholder for our matched registry dataset entry
+                    AnchorSaveData matchedData = null;
 
                     foreach (var savedAnchor in savedCollection.anchors)
                     {
                         if (savedAnchor.uuid.Equals(unboundUuidStr, StringComparison.OrdinalIgnoreCase))
                         {
-                            targetPrefabId = savedAnchor.prefabId;
+                            matchedData = savedAnchor;
                             break;
                         }
                     }
 
-                    GameObject prefabToSpawn = GetPrefabById(targetPrefabId);
+                    if (matchedData == null) continue;
+
+                    GameObject prefabToSpawn = GetPrefabById(matchedData.prefabId);
                     if (prefabToSpawn == null)
                     {
-                        Debug.LogError($"Prefab identity lookup failed for ID string: '{targetPrefabId}'");
+                        Debug.LogError($"Prefab identity lookup failed for ID string: '{matchedData.prefabId}'");
                         continue;
                     }
 
                     // Build spatial driver hierarchy node
-                    GameObject anchorDriverRoot = new GameObject($"SpatialAnchor_{targetPrefabId}");
+                    GameObject anchorDriverRoot = new GameObject($"SpatialAnchor_{matchedData.prefabId}");
                     var spatialAnchor = anchorDriverRoot.AddComponent<OVRSpatialAnchor>();
 
                     unboundAnchor.BindTo(spatialAnchor);
@@ -210,16 +224,18 @@ public class SpatialManager : MonoBehaviour
                     visualObject.transform.localRotation = Quaternion.identity;
                     visualObject.tag = TargetTag;
 
+                    // FIX / ADDED: Explicitly re-apply the structural scale values from the JSON data back onto the local child object
+                    visualObject.transform.localScale = new Vector3(matchedData.savedScaleX, matchedData.savedScaleY, matchedData.savedScaleZ);
+
                     loadCount++;
                 }
             }
 
-            debugText.text = $"{loadCount} items loaded successfully!";
+            debugText.text = "loaded successfully!";
         }
         else
         {
-            // If this logs out 0, check your PlayerPrefs setup
-            debugText.text = $"0 items loaded successfully.";
+            //debugText.text = $"0 items loaded successfully.";
             Debug.LogWarning($"Meta query returned success code: {result.Success}, but found {_unboundAnchors.Count} anchors in your physical area.");
         }
     }
@@ -239,5 +255,4 @@ public class SpatialManager : MonoBehaviour
         return null;
     }
 }
-
 
