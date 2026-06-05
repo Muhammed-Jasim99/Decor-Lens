@@ -133,7 +133,7 @@ public class SpatialManager : MonoBehaviour
             PlayerPrefs.SetString(AnchorRegistryKey, json);
             PlayerPrefs.Save();
 
-            debugText.text = "Saved items successfully!";
+            debugText.text = "Saved successfully!";
         }
         else
         {
